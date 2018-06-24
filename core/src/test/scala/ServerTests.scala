@@ -43,6 +43,15 @@ class ServerTests extends Tests {
     }
   }
 
+  test("Address") {
+    val app: Service = req => Ok(s"Client: ${req.from.map(_.getHostAddress).getOrElse("?")}")
+    foreachProtocol(HTTP, HTTP2) { protocol =>
+      withServer(Server.listen(options = ServerOptions(protocols = Set(protocol)))(app)) { server =>
+        contentString(Get(s"http://localhost:${server.port}"), protocol = protocol) should equal (s"Client: 127.0.0.1")
+      }
+    }
+  }
+
   test("Headers") {
     foreachProtocol(HTTP, HTTP2) { protocol =>
       withServer(Server.listen(options = ServerOptions(protocols = Set(protocol))) { req =>
@@ -117,7 +126,7 @@ class ServerTests extends Tests {
     foreachProtocol(HTTP, HTTP2) { protocol =>
       withServer(Server.listen(options = ServerOptions(protocols = Set(protocol))) {
         case GET at "/" => Redirect("/lol")
-        case GET at "/old" => Redirect("/", permanent = true)
+        case GET at "/old" => Redirect("/", code = 308)
         case _ at "/lol" => Ok("lol")
         case _ => NotFound
       }) { server =>
@@ -141,11 +150,11 @@ class ServerTests extends Tests {
     foreachProtocol(HTTP, HTTP2) { protocol =>
       withServer(Server.listen(options = ServerOptions(protocols = Set(protocol))) {
         case req @ POST at url"/" =>
-          req.read(_.chunks.runFold(0)((size,chunk) => size + chunk.size)).map { contentSize =>
+          req.read(_.chunks.compile.fold(0)((size,chunk) => size + chunk.size)).map { contentSize =>
             Ok(s"Received $contentSize bytes")
           }
         case req @ POST at url"/take/$size" =>
-          req.read(_.take(size.toInt).chunks.runFold(0)((size,chunk) => size + chunk.size)).map { contentSize =>
+          req.read(_.take(size.toInt).chunks.compile.fold(0)((size,chunk) => size + chunk.size)).map { contentSize =>
             Ok(s"Took $contentSize bytes")
           }
       }) { server =>

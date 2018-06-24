@@ -56,22 +56,23 @@ object DatabaseAccess {
       // so the result is wrapped into an `IO`.
       sql"SELECT code, name FROM country".
         query[(String,String)].
-        list.
+        to[List].
         transact(xa).
         map { resultSet =>
 
         // Let's transform our database result set to an HTML list
-        val countries = resultSet.map { case (code, name) =>
-          html"<li><strong>${code}</strong> - ${name}</li>"
-        }
+        val content =
+          tmpl"""
+            <h1>@resultSet.size Countries:</h1>
+            <ul>
+              @resultSet.map { case (code, name) =>
+                <li><strong>@code</strong> - @name</li>
+              }
+            </ul>
+          """
 
         // Finally we give back an Ok HTTP response.
-        Ok(html"""
-          <h1>${resultSet.size} Countries:</h1>
-          <ul>
-            $countries
-          </ul>
-        """)
+        Ok(content)
       }
     }
 

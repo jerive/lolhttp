@@ -11,6 +11,7 @@ import io.netty.channel.{
   ChannelFuture,
   ChannelHandlerContext,
   SimpleChannelInboundHandler }
+import io.netty.channel.socket.{ SocketChannel }
 import io.netty.handler.logging.{ LogLevel, LoggingHandler }
 import io.netty.util.concurrent.{ GenericFutureListener }
 import io.netty.buffer.{ Unpooled, ByteBuf }
@@ -21,6 +22,7 @@ import io.netty.handler.codec.http.{
   DefaultLastHttpContent,
   HttpClientCodec,
   HttpContent,
+  HttpContentCompressor,
   HttpContentDecompressor,
   HttpMessage,
   HttpObject,
@@ -191,7 +193,7 @@ private[http] object NettySupport {
                   throw Error.ConnectionClosed
               }
             }
-          }.run.unsafeRunAsync(_ => if(channel.isOpen) channel.close())
+          }.compile.drain.unsafeRunAsync(_ => if(channel.isOpen) channel.close())
           new ClientConnection {
             def apply(request: Request, release: () => Unit): IO[Response] = {
               release()
@@ -277,7 +279,7 @@ private[http] object NettySupport {
                                 // If user code did not read the response content yet,
                                 // we need to drain the content stream before upgrading
                                 // the connection.
-                                case true => Stream.eval(contentStream.drain.run)
+                                case true => Stream.eval(contentStream.compile.drain)
                               }.
                               flatMap { _ =>
                                 Stream.eval(upgradedReaders.tryDecrement).
@@ -341,7 +343,13 @@ private[http] object NettySupport {
                             (HttpString(h.getKey.toString), HttpString(h.getValue.toString))
                           }.toMap.filterKeys(_.toString.toLowerCase.startsWith("content-"))
                         ),
-                        protocol = HTTP2
+                        protocol = HTTP2,
+                        from = channel match {
+                          case socket: SocketChannel =>
+                            Option(socket.remoteAddress).map(_.getAddress)
+                          case _ =>
+                            None
+                        }
                       )
                     }
                 }
@@ -369,6 +377,7 @@ private[http] object NettySupport {
           debug.foreach(logger => channel.pipeline.addLast("Debug", new LoggingHandler(logger, LogLevel.INFO)))
           channel.pipeline.addLast("HttpRequestDecoder", new HttpRequestDecoder())
           channel.pipeline.addLast("HttpResponseEncoder", new HttpResponseEncoder())
+          channel.pipeline.addLast("HttpContentCompressor", new HttpContentCompressor())
           val http1xConnection = new Http1xConnection(channel, client = false)
           new ServerConnection {
             // For HTTP/1.1 we won't accept new requests until the response
@@ -403,7 +412,13 @@ private[http] object NettySupport {
                           headers = nettyRequest.headers.asScala.map { h =>
                             (HttpString(h.getKey), HttpString(h.getValue))
                           }.toMap.filter(_._1.toString.toLowerCase.startsWith("content-"))
-                        )
+                        ),
+                        from = channel match {
+                          case socket: SocketChannel =>
+                            Option(socket.remoteAddress).map(_.getAddress)
+                          case _ =>
+                            None
+                        }
                       )
                     }
                   case x =>
@@ -426,7 +441,7 @@ private[http] object NettySupport {
                       if(response.status == 101) {
                         http1xConnection.upgrade().flatMap { upstream =>
                           val downstream = response.upgradeConnection(upstream)
-                          (downstream to http1xConnection.writeBytes).drain.run
+                          (downstream to http1xConnection.writeBytes).compile.drain
                         }
                       }
                       else {
@@ -626,7 +641,7 @@ private[http] object NettySupport {
                     onFinalize {
                       for {
                         fullyRead <- eosReached.get
-                        _ <- if (fullyRead) IO.unit else contentStream.takeWhile(_.isDefined).drain.run
+                        _ <- if (fullyRead) IO.unit else contentStream.takeWhile(_.isDefined).compile.drain
                         _ <- if (client) permits.increment else permits.decrement
                       } yield ()
                     }
@@ -642,8 +657,11 @@ private[http] object NettySupport {
       for {
         _ <- if (client) permits.decrement else permits.increment
         _ <- if (channel.isOpen) IO(channel.writeAndFlush(message)) else IO.raiseError(Error.ConnectionClosed)
-        _ <- (contentStream to httpContentSink).interruptWhen(streamCloses).run
-        _ <- IO(if (message.isInstanceOf[HttpResponse] && HttpUtil.getContentLength(message, -1) < 0) channel.close())
+        _ <- (contentStream to httpContentSink).interruptWhen(streamCloses).compile.drain
+        _ <- IO {
+          if (message.isInstanceOf[HttpResponse] && HttpUtil.getContentLength(message, -1) < 0 &&
+            !HttpUtil.isTransferEncodingChunked(message)) channel.close()
+        }
       } yield ()
 
     // Stop accepting HTTP messages
@@ -749,7 +767,7 @@ private[http] object NettySupport {
               onFinalize {
                 for {
                   fullyRead <- eosReached.get
-                  _ <- if (fullyRead) IO.unit else contentStream.takeWhile(_.isDefined).drain.run
+                  _ <- if (fullyRead) IO.unit else contentStream.takeWhile(_.isDefined).compile.drain
                 } yield ()
               }
           }).unsafeRunSync()
@@ -859,7 +877,7 @@ private[http] object NettySupport {
             f.toIO.map(_ => streamId)
           }.flatMap(identity)
         } else IO.raiseError(Error.ConnectionClosed)
-        _ <- (contentStream to dataSink(streamId)).interruptWhen(streamCloses).run
+        _ <- (contentStream to dataSink(streamId)).interruptWhen(streamCloses).compile.drain
       } yield ()
 
 

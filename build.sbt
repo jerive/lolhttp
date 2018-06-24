@@ -1,21 +1,33 @@
-val VERSION = "0.9.1"
+val VERSION = "0.10.1"
 
 lazy val commonSettings = Seq(
   organization := "com.criteo.lolhttp",
   version := VERSION,
   scalaVersion := "2.12.4",
   crossScalaVersions := Seq("2.11.11", scalaVersion.value),
-  scalacOptions ++= Seq(
-    "-deprecation",
-    "-encoding", "UTF-8",
-    "-feature",
-    "-unchecked",
-    "-Xlint",
-    "-Yno-adapted-args",
-    "-Ywarn-dead-code",
-    "-Xfuture",
-    "-Ywarn-unused-import"
-  ),
+  scalacOptions ++= {
+    Seq(
+      "-deprecation",
+      "-encoding", "UTF-8",
+      "-feature",
+      "-unchecked",
+      "-Xlint",
+      "-Yno-adapted-args",
+      "-Ywarn-dead-code",
+      "-Xfuture",
+      "-Ywarn-unused-import",
+      "-language:experimental.macros"
+    ) ++ (
+      if(scalaVersion.value.startsWith("2.11"))
+        // 2.11.x options
+        Nil
+      else if(scalaVersion.value.startsWith("2.12"))
+        // 2.12.x options
+        Seq("-Ywarn-macros:after")
+      else
+        Nil
+    )
+  },
 
   // Tests
   fork in Test := true,
@@ -93,7 +105,7 @@ lazy val lolhttp =
     commonSettings,
 
     libraryDependencies ++= Seq(
-      "co.fs2" %% "fs2-core" % "0.10.0-M10",
+      "co.fs2" %% "fs2-core" % "0.10.2",
       "io.netty" % "netty-codec-http2" % "4.1.16.Final",
       "org.scalatest" %% "scalatest" % "3.0.4" % "test"
     ),
@@ -136,7 +148,7 @@ lazy val loljson =
       "io.circe" %% "circe-generic",
       "io.circe" %% "circe-parser",
       "io.circe" %% "circe-optics"
-    ).map(_ % "0.9.0-M3"),
+    ).map(_ % "0.9.1"),
     pomPostProcess := removeDependencies("org.scalatest")
   ).
   dependsOn(lolhttp % "compile->compile;test->test")
@@ -146,6 +158,9 @@ lazy val lolhtml =
   settings(
     commonSettings,
 
+    libraryDependencies ++= Seq(
+      "com.lihaoyi" %% "fastparse" % "1.0.0"
+    ),
     pomPostProcess := removeDependencies("org.scalatest")
   ).
   dependsOn(lolhttp % "compile->compile;test->test")
@@ -162,7 +177,7 @@ lazy val examples: Project =
     libraryDependencies ++= Seq(
       "org.tpolecat" %% "doobie-core",
       "org.tpolecat" %% "doobie-h2"
-    ).map(_ % "0.5.0-M11"),
+    ).map(_ % "0.5.0"),
 
     fork in IntegrationTest := true,
 
